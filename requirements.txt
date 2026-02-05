@@ -1,0 +1,20 @@
+# Web Research and Document Writer Agent
+# Dependencies for LangChain + MCP integration
+
+# Core LangChain dependencies
+langchain-mcp-adapters>=0.1.0
+langgraph>=0.2.0
+langchain-openai>=0.2.0
+langchain-core>=0.3.0
+
+# MCP server framework
+mcp>=1.0.0
+
+# Research tools dependencies
+duckduckgo-search>=6.0.0
+wikipedia>=1.4.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# Environment management
+python-dotenv>=1.0.0
