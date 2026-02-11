@@ -1,129 +1,226 @@
 """
 Multi-Agent Web Research and Document Writer
 
-A LangGraph-based multi-agent system with specialized agents:
-- Researcher Agent: Gathers information from web sources
-- Writer Agent: Synthesizes research into documents
-- Reviewer Agent: Fact-checks and improves documents
-
-Uses MCP servers for web research and document writing tools.
+A LangGraph-based multi-agent system with a Supervisor-led dynamic architecture:
+- Supervisor: Routes to Parallel Researchers or Writer
+- Researchers: Run in parallel based on subtopics
+- Writer: Synthesizes research or revises based on feedback
+- Human Review: Mandatory checkpoint after writing
 """
 
 import asyncio
 import os
+from typing import List, Literal
 from dotenv import load_dotenv
 
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Send, Command
 from langchain_core.messages import HumanMessage
 
 from tools import get_mcp_client
-from agents import ResearcherAgent, WriterAgent, ReviewerAgent, AgentState
+from agents import (
+    SupervisorAgent, 
+    ResearcherAgent, 
+    WriterAgent, 
+    human_review_node, 
+    AgentState
+)
 
 # Load environment variables
 load_dotenv()
 
 
-async def create_multi_agent_graph():
-    """
-    Create and compile the multi-agent LangGraph.
-    
-    Returns:
-        Compiled LangGraph with Researcher → Writer → Reviewer pipeline
-    """
-    # Get MCP client and tools
-    client = get_mcp_client()
-    all_tools = await client.get_tools()
-    
-    # Separate tools by category
+# --- Node Functions ---
+
+async def supervisor_node(state: AgentState):
+    """Router node that calls the SupervisorAgent."""
+    supervisor = SupervisorAgent()
+    result = await supervisor.run(state)
+    return result
+
+
+async def researcher_node(state: AgentState):
+    """Researcher node (fanned out)."""
+    # Get MCP client and tools (locally for each node instance)
+    from tools import get_tools
+    all_tools = await get_tools()
     research_tools = [t for t in all_tools if t.name in ["web_search", "fetch_webpage", "wikipedia_search"]]
+    
+    agent = ResearcherAgent(tools=research_tools)
+    return await agent.run(state)
+
+
+async def merge_research_node(state: AgentState):
+    """Merges parallel research results into a single research_data string."""
+    print("🔄 MERGING parallel research results...")
+    results = state.get("parallel_results", [])
+    merged = "\n\n" + "=" * 50 + "\n"
+    merged += "COLLECTED RESEARCH DATA\n"
+    merged += "=" * 50 + "\n\n"
+    
+    for i, res in enumerate(results, 1):
+        merged += f"--- SOURCE {i} ---\n{res}\n\n"
+    
+    return {
+        "research_data": merged,
+        "parallel_results": [], # Clear for potential next loop
+        "current_phase": "writing"
+    }
+
+
+async def writer_node(state: AgentState):
+    """Writer node."""
+    from tools import get_tools
+    all_tools = await get_tools()
     document_tools = [t for t in all_tools if t.name in ["write_document", "read_document", "append_to_document", "list_documents"]]
     
-    print(f"\n📦 Loaded Tools:")
-    print(f"   🔍 Research tools: {[t.name for t in research_tools]}")
-    print(f"   📄 Document tools: {[t.name for t in document_tools]}")
+    agent = WriterAgent(tools=document_tools)
+    return await agent.run(state)
+
+
+# --- Routing Functions ---
+
+def route_from_supervisor(state: AgentState):
+    """Decides where to go after Supervisor based on current_phase."""
+    phase = state.get("current_phase")
     
-    # Create specialized agents
-    researcher = ResearcherAgent(tools=research_tools)
-    writer = WriterAgent(tools=document_tools)
-    reviewer = ReviewerAgent(tools=document_tools)
+    if phase == "research":
+        subtopics = state.get("subtopics", [])
+        if not subtopics:
+            print("⚠️ No subtopics found, routing to writer")
+            return "writer"
+        
+        # Parallel fan-out
+        return [Send("researcher", {"messages": [HumanMessage(content=s)]}) for s in subtopics]
     
-    # Build the graph
+    elif phase == "rewrite":
+        return "writer"
+    
+    return "writer" # Fallback
+
+
+def route_from_human_review(state: AgentState):
+    """Decides where to go after Human Review."""
+    phase = state.get("current_phase")
+    if phase == "approved":
+        return END
+    return "supervisor"
+
+
+# --- Graph Construction ---
+
+def create_multi_agent_graph():
+    """Build and compile the multi-agent graph."""
     builder = StateGraph(AgentState)
     
-    # Add agent nodes
-    builder.add_node("researcher", researcher.run)
-    builder.add_node("writer", writer.run)
-    builder.add_node("reviewer", reviewer.run)
+    # Add nodes
+    builder.add_node("supervisor", supervisor_node)
+    builder.add_node("researcher", researcher_node)
+    builder.add_node("merge_research", merge_research_node)
+    builder.add_node("writer", writer_node)
+    builder.add_node("human_review", human_review_node)
     
-    # Define the pipeline flow: START → researcher → writer → reviewer → END
-    builder.add_edge(START, "researcher")
-    builder.add_edge("researcher", "writer")
-    builder.add_edge("writer", "reviewer")
-    builder.add_edge("reviewer", END)
+    # Define flow
+    builder.add_edge(START, "supervisor")
     
-    # Compile the graph
-    graph = builder.compile()
+    # Supervisor → Parallel Researchers OR Writer
+    builder.add_conditional_edges(
+        "supervisor", 
+        route_from_supervisor,
+        ["researcher", "writer"]
+    )
     
-    return graph
+    # Parallel Researchers → Merge
+    builder.add_edge("researcher", "merge_research")
+    
+    # Merge → Writer
+    builder.add_edge("merge_research", "writer")
+    
+    # Writer → Human Review (Checkpoint)
+    builder.add_edge("writer", "human_review")
+    
+    # Human Review → END or Back to Supervisor
+    builder.add_conditional_edges(
+        "human_review",
+        route_from_human_review,
+        [END, "supervisor"]
+    )
+    
+    # Persistence for interrupts
+    memory = MemorySaver()
+    return builder.compile(checkpointer=memory)
 
 
 async def run_multi_agent(query: str):
     """
     Run the multi-agent pipeline with a given research query.
-    
-    Args:
-        query: The research/writing task for the agents
+    Handles the interrupt-resume loop for human review.
     """
     print("\n" + "=" * 70)
-    print("🤖 Multi-Agent Web Research and Document Writer")
+    print("🤖 Supervisor-Led Multi-Agent Pipeline")
     print("=" * 70)
-    print(f"\n📝 Task: {query}\n")
-    print("\n🔄 Pipeline: Researcher → Writer → Reviewer\n")
+    print(f"\n📝 Initial Task: {query}\n")
     
-    # Create the multi-agent graph
-    graph = await create_multi_agent_graph()
+    graph = create_multi_agent_graph()
+    config = {"configurable": {"thread_id": "research_thread_1"}}
     
     # Initialize state
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "research_data": "",
+        "parallel_results": [],
         "draft_document": "",
-        "review_feedback": "",
-        "final_document": "",
-        "current_phase": "research"
+        "human_feedback": "",
+        "rewrite_instructions": "",
+        "subtopics": [],
+        "current_phase": "initial"
     }
     
-    # Run the pipeline
-    result = await graph.ainvoke(initial_state)
+    # Event loop to handle interrupts
+    current_input = initial_state
     
-    # Print final results
+    while True:
+        async for event in graph.astream(current_input, config, stream_mode="values"):
+            # Values stream will emit the latest state at each step
+            latest_state = event
+        
+        # Check if we are at an interrupt
+        state_snapshot = await graph.aget_state(config)
+        
+        if state_snapshot.next:
+            # We hit an interrupt (human_review node)
+            # Find the interrupt payload
+            # Note: in modern LangGraph, interrupts surface through the 'interrupt' payload in snapshots or errors
+            # Here we follow the pattern of waiting for input from terminal.
+            
+            # The human_review_node already printed the draft.
+            print("\n👉 Awaiting your input (type 'approve' to finish, or describe changes):")
+            user_input = await asyncio.get_event_loop().run_in_executor(None, input, "Feedback > ")
+            
+            # Resume with user input
+            current_input = Command(resume=user_input)
+        else:
+            # Graph finished
+            break
+            
     print("\n" + "=" * 70)
     print("📊 PIPELINE COMPLETE")
     print("=" * 70)
-    print(f"\n✅ Current Phase: {result.get('current_phase', 'unknown')}")
-    print(f"\n📝 Review Summary:\n{result.get('review_feedback', 'No feedback')[:500]}...")
     
-    return result
+    return latest_state
 
 
 async def main():
-    """Main entry point for the multi-agent system."""
-    
-    # Check for API key
+    """Main entry point."""
     if not os.getenv("OPENAI_API_KEY"):
         print("❌ Error: OPENAI_API_KEY environment variable not set")
-        print("   Please set it in .env file or as an environment variable")
         return
     
-    # Example research task
     query = """
     Research the current state of artificial general intelligence (AGI) development.
-    Include:
-    - Major companies and research labs working on AGI
-    - Recent breakthroughs and milestones
-    - Challenges and timelines predicted by experts
-    
-    Write a comprehensive summary document called 'agi_research_summary.md'
+    Include major labs (OpenAI, DeepMind, Anthropic), breakthroughs, and timelines.
+    Write a summary document called 'agi_report.md'.
     """
     
     await run_multi_agent(query)
