@@ -1,18 +1,21 @@
 # Multi-Agent Web Research & Document Writer
 
-A LangGraph-based multi-agent system that researches topics and creates comprehensive documents.
+A LangGraph-based multi-agent system with a Supervisor-led dynamic architecture that researches topics in parallel and creates comprehensive documents.
 
 ## Architecture
 
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│ Researcher  │ →  │   Writer    │ →  │  Reviewer   │
-│   Agent     │    │   Agent     │    │   Agent     │
-└─────────────┘    └─────────────┘    └─────────────┘
-      ↓                  ↓                  ↓
- Web Search        Synthesize         Fact-check
- Wikipedia         into doc           & finalize
- URL Fetch
+The system uses a Supervisor agent to orchestrate the research and writing process. Researchers run in parallel to gather information on subtopics, which is then synthesized by a Writer agent. A Human Review step ensures quality before finalization.
+
+```mermaid
+graph TD
+    START((START)) --> Supervisor[Supervisor Agent]
+    Supervisor -->|Research Phase| Researcher[Parallel Researchers]
+    Researcher --> Merge[Merge Research Results]
+    Merge --> Writer[Writer Agent]
+    Supervisor -->|Rewrite Phase| Writer
+    Writer --> HumanReview{Human Review}
+    HumanReview -->|Approve| END((END))
+    HumanReview -->|Feedback| Supervisor
 ```
 
 ## Setup
@@ -21,21 +24,18 @@ A LangGraph-based multi-agent system that researches topics and creates comprehe
 - Python 3.12+
 - OpenAI API key
 
-### 2. Create Virtual Environment (WSL Ubuntu)
+### 2. Installation (WSL/Linux)
 
 ```bash
-# Navigate to project directory
-cd '/mnt/c/Users/rsamarth/OneDrive - ZeOmega/Desktop/project_demo'
+# Clone and enter directory
+cd project_demo
 
-# Set Python 3.12 with pyenv
-pyenv local 3.12
+# Run setup script (creates venv and installs deps)
+chmod +x setup_env.sh
+./setup_env.sh
 
-# Create and activate virtual environment
-python -m venv venv
+# Activate virtual environment
 source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
 ```
 
 ### 3. Configure Environment
@@ -53,9 +53,15 @@ cp .env.example .env
 ### Run the Agent
 
 ```bash
-source venv/bin/activate
 python main.py
 ```
+
+The agent will:
+1. Initialize the Supervisor to decompose the query.
+2. Spawn parallel Researchers for each subtopic.
+3. Merge research results.
+4. Draft the document.
+5. Pause for your review in the terminal.
 
 ### Custom Research Query
 
@@ -63,13 +69,9 @@ Edit the `query` variable in `main.py`:
 
 ```python
 query = """
-Research [YOUR TOPIC HERE].
-Include:
-- Key points
-- Recent developments
-- Expert opinions
-
-Write a summary document called 'my_research.md'
+Research the current state of artificial general intelligence (AGI) development.
+Include major labs (OpenAI, DeepMind, Anthropic), breakthroughs, and timelines.
+Write a summary document called 'agi_report.md'.
 """
 ```
 
@@ -78,20 +80,25 @@ Write a summary document called 'my_research.md'
 ```
 project_demo/
 ├── agents/                 # Multi-agent module
-│   ├── __init__.py
-│   ├── state.py           # Shared agent state
 │   ├── base.py            # Abstract base agent
 │   ├── researcher.py      # Gathers information
+│   ├── supervisor.py      # Orchestrator & Router
 │   ├── writer.py          # Creates documents
-│   └── reviewer.py        # Fact-checks & edits
-├── mcp_servers/           # MCP tool servers
-│   ├── research_server.py # Web search, Wikipedia, URL fetch
-│   └── document_server.py # File read/write operations
-├── output/                # Generated documents
-├── main.py                # Entry point & orchestration
-├── tools.py               # MCP client configuration
+│   ├── human_review.py    # Human-in-the-loop logic
+│   ├── state.py           # Shared agent state
+│   └── models.py          # Data models and schemas
+├── mcp_servers/           # MCP tool servers (FastMCP)
+│   ├── research_server.py # Web search & Wikipedia
+│   └── document_server.py # File operations
+├── prompts/                # Externalized system prompts
+│   ├── supervisor_system.md
+│   ├── researcher_system.md
+│   └── writer_system.md
+├── output/                # Generated research documents
+├── main.py                # Graph construction & entry point
+├── tools.py               # MCP client & tool aggregation
 ├── requirements.txt       # Python dependencies
-└── .env                   # API keys (create from .env.example)
+└── setup_env.sh           # Setup utility
 ```
 
 ## Available Tools
@@ -106,12 +113,11 @@ project_demo/
 ### Document Tools
 | Tool | Description |
 |------|-------------|
-| `write_document` | Create/overwrite a document |
+| `write_document` | Create/overwrite a document in `output/` |
 | `read_document` | Read document contents |
 | `append_to_document` | Append to existing document |
-| `list_documents` | List all documents |
-| `delete_document` | Delete a document |
+| `list_documents` | List all documents in `output/` |
 
 ## Output
 
-Generated documents are saved to the `output/` directory.
+Generated documents are saved to the `output/` directory by default.
