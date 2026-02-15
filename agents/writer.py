@@ -1,125 +1,89 @@
 """
 Writer Agent
 
-Specializes in synthesizing research into well-structured documents.
+Synthesizes research into well-structured documents.
 Handles both initial drafts and revisions based on human feedback.
-Uses LangChain's create_agent for the tool-calling loop.
+Non-agentic: performs a single LLM call and saves the output via a local utility.
 """
 
-from typing import List
-from langchain_core.tools import BaseTool
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from langchain.agents import create_agent
-
-from .base import BaseAgent
 from .state import AgentState
 from prompts import load_prompt
+from utils import get_llm
 
 
-class WriterAgent(BaseAgent):
+async def run_writer(state: AgentState, tools: list = None) -> dict:
     """
-    Writer Agent - Synthesizes research into polished documents.
+    Execute the writer by generating content.
 
-    Takes raw research data and creates well-structured, comprehensive
-    documents with proper formatting and citations.
-    On revision loops, incorporates human feedback to improve the draft.
+    Args:
+        state: Current agent state with research_data and optional human_feedback
+        tools: Ignored (kept for backward compatibility with the signature)
+
+    Returns:
+        Updated state with draft_document
     """
+    print("\n✍️ WRITER Starting...")
 
-    def __init__(
-        self,
-        tools: List[BaseTool],
-        temperature: float = 0.1,
-    ):
-        super().__init__(tools=tools, temperature=temperature)
+    research_data = state.get("research_data", "")
+    human_feedback = state.get("human_feedback", "")
+    rewrite_instructions = state.get("rewrite_instructions", "")
+    existing_draft = state.get("draft_document", "")
+    original_query = state["messages"][0].content if state["messages"] else ""
 
-    @property
-    def name(self) -> str:
-        return "Writer"
+    if rewrite_instructions and existing_draft:
+        # Revision mode — improve existing draft based on supervisor instructions
+        writing_prompt = f"""Revise the following document based on the supervisor's instructions.
 
-    @property
-    def system_prompt(self) -> str:
-        return self.load_prompt("writer_system")
+                ORIGINAL REQUEST:
+                {original_query}
 
-    def _create_agent(self):
-        """Create a LangChain agent with tools and system prompt."""
-        return create_agent(
-            self.model,
-            tools=self.tools,
-            system_prompt=load_prompt("writer"),
-        )
+                CURRENT DRAFT:
+                {existing_draft}
 
-    async def run(self, state: AgentState) -> dict:
-        """
-        Execute the writer agent.
+                INSTRUCTIONS:
+                {rewrite_instructions}
 
-        Args:
-            state: Current agent state with research_data and optional human_feedback
+                (Reference) RAW HUMAN FEEDBACK:
+                {human_feedback}
 
-        Returns:
-            Updated state with draft_document
-        """
-        print("\n✍️ WRITER AGENT Starting...")
+                (Reference) RESEARCH DATA:
+                {research_data[:3000]}
 
-        research_data = state.get("research_data", "")
-        human_feedback = state.get("human_feedback", "")
-        rewrite_instructions = state.get("rewrite_instructions", "")
-        existing_draft = state.get("draft_document", "")
-        original_query = state["messages"][0].content if state["messages"] else ""
+                Please revise the document and provide the full updated content directly."""
+    else:
+        # Initial draft mode
+        writing_prompt = f"""Based on the following research data, create a comprehensive document.
 
-        if rewrite_instructions and existing_draft:
-            # Revision mode — improve existing draft based on supervisor instructions
-            writing_prompt = f"""Revise the following document based on the supervisor's instructions.
+                ORIGINAL REQUEST:
+                {original_query}
 
-ORIGINAL REQUEST:
-{original_query}
+                RESEARCH DATA:
+                {research_data}
 
-CURRENT DRAFT:
-{existing_draft}
+                Please synthesize this into a well-structured document and provide the full content directly."""
 
-INSTRUCTIONS:
-{rewrite_instructions}
+    model = get_llm(temperature=0)
+    system_prompt = load_prompt("writer")
 
-(Reference) RAW HUMAN FEEDBACK:
-{human_feedback}
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=writing_prompt),
+    ]
 
-(Reference) RESEARCH DATA:
-{research_data[:3000]}
+    # Simple single LLM call
+    response = await model.ainvoke(messages)
+    draft = response.content
 
-Please revise the document incorporating the instructions and save it using the write_document tool."""
-        else:
-            # Initial draft mode
-            writing_prompt = f"""Based on the following research data, create a comprehensive document.
+    messages.append(response)
 
-ORIGINAL REQUEST:
-{original_query}
+    mode = "Revised" if rewrite_instructions else "Created initial"
+    print(f"✅ WRITER Complete - {mode} draft document")
 
-RESEARCH DATA:
-{research_data}
-
-Please synthesize this into a well-structured markdown document and save it using the write_document tool."""
-
-        agent = self._create_agent()
-
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=writing_prompt)]},
-            config={"recursion_limit": 10},  # ~5 tool calls max
-        )
-
-        # Extract draft from the agent's final AI message
-        final_messages = result["messages"]
-        draft = ""
-        for msg in reversed(final_messages):
-            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                draft = msg.content
-                break
-
-        mode = "Revised" if rewrite_instructions else "Created initial"
-        print(f"✅ WRITER AGENT Complete - {mode} draft document")
-
-        return {
-            "messages": final_messages,
-            "draft_document": draft,
-            "current_phase": "human_review",
-            "rewrite_instructions": "",  # Clear instructions after incorporating them
-        }
+    return {
+        "messages": messages,
+        "draft_document": draft,
+        "current_phase": "human_review",
+        "rewrite_instructions": "",  # Clear instructions after incorporating them
+    }

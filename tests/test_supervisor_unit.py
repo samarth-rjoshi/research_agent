@@ -1,38 +1,33 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from langchain_core.messages import HumanMessage
-from agents.supervisor import SupervisorAgent
+from agents.supervisor import run_supervisor
 from agents.models import SupervisorPlan
 from agents.state import AgentState
 
 
-@pytest.fixture
-def supervisor_agent():
-    with patch("agents.base.ChatOpenAI"):
-        agent = SupervisorAgent()
-        return agent
-
-
 @pytest.mark.asyncio
-async def test_supervisor_run_initial_query(supervisor_agent):
-    """Test supervisor agent initial query mode (research path)."""
+async def test_supervisor_run_initial_query():
+    """Test supervisor initial query mode (research path)."""
     mock_plan = SupervisorPlan(
         action="research",
         subtopics=["topic1", "topic2"],
         rewrite_instructions=None,
     )
 
-    # Mock model.with_structured_output().invoke()
     mock_structured_llm = MagicMock()
     mock_structured_llm.invoke.return_value = mock_plan
-    supervisor_agent.model.with_structured_output.return_value = mock_structured_llm
 
-    state: AgentState = {
-        "messages": [HumanMessage(content="Explain quantum physics")],
-        "current_phase": "start",
-    }
+    mock_model_instance = MagicMock()
+    mock_model_instance.with_structured_output.return_value = mock_structured_llm
 
-    result = await supervisor_agent.run(state)
+    with patch("agents.supervisor.get_llm", return_value=mock_model_instance):
+        state: AgentState = {
+            "messages": [HumanMessage(content="Explain quantum physics")],
+            "current_phase": "start",
+        }
+
+        result = await run_supervisor(state)
 
     assert result["current_phase"] == "research"
     assert result["subtopics"] == ["topic1", "topic2"]
@@ -45,8 +40,8 @@ async def test_supervisor_run_initial_query(supervisor_agent):
 
 
 @pytest.mark.asyncio
-async def test_supervisor_run_feedback_loop(supervisor_agent):
-    """Test supervisor agent feedback loop mode (rewrite path)."""
+async def test_supervisor_run_feedback_loop():
+    """Test supervisor feedback loop mode (rewrite path)."""
     mock_plan = SupervisorPlan(
         action="rewrite",
         subtopics=None,
@@ -55,16 +50,19 @@ async def test_supervisor_run_feedback_loop(supervisor_agent):
 
     mock_structured_llm = MagicMock()
     mock_structured_llm.invoke.return_value = mock_plan
-    supervisor_agent.model.with_structured_output.return_value = mock_structured_llm
 
-    state: AgentState = {
-        "messages": [HumanMessage(content="Explain quantum physics")],
-        "human_feedback": "The intro is weak.",
-        "draft_document": "Quantum physics is cool.",
-        "current_phase": "human_review",
-    }
+    mock_model_instance = MagicMock()
+    mock_model_instance.with_structured_output.return_value = mock_structured_llm
 
-    result = await supervisor_agent.run(state)
+    with patch("agents.supervisor.get_llm", return_value=mock_model_instance):
+        state: AgentState = {
+            "messages": [HumanMessage(content="Explain quantum physics")],
+            "human_feedback": "The intro is weak.",
+            "draft_document": "Quantum physics is cool.",
+            "current_phase": "human_review",
+        }
+
+        result = await run_supervisor(state)
 
     assert result["current_phase"] == "rewrite"
     assert "subtopics" not in result

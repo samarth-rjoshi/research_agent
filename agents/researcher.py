@@ -1,81 +1,70 @@
 """
 Researcher Agent
 
-Specializes in gathering information from web sources, Wikipedia, and URLs.
-Uses LangChain's create_agent for the tool-calling loop.
+Gathers information from web sources, Wikipedia, and URLs.
+Uses a ToolNode-based loop for tool execution.
 """
 
-from typing import List
-from langchain_core.tools import BaseTool
-from langchain_core.messages import HumanMessage
+import os
 
-from langchain.agents import create_agent
+from langchain_core.messages import SystemMessage
+from langgraph.prebuilt import ToolNode
 
-from .base import BaseAgent
 from .state import AgentState
 from prompts import load_prompt
+from utils import get_llm
 
 
-class ResearcherAgent(BaseAgent):
+async def run_researcher(state: AgentState, tools: list) -> dict:
     """
-    Researcher Agent - Gathers comprehensive information on a topic.
+    Execute the researcher with a ToolNode-based loop.
 
-    Uses web search, Wikipedia, and URL fetching tools to collect
-    raw research data from multiple sources.
+    Args:
+        state: Current agent state
+        tools: List of research tools (web_search, fetch_webpage, wikipedia_search)
+
+    Returns:
+        Updated state with research_data
     """
+    print("\n🔍 RESEARCHER Starting...")
 
-    def __init__(
-        self,
-        tools: List[BaseTool],
-        temperature: float = 0.1,
-    ):
-        super().__init__(tools=tools, temperature=temperature)
+    model = get_llm(temperature=0.1)
 
-    @property
-    def name(self) -> str:
-        return "Researcher"
+    system_prompt = load_prompt("researcher")
+    model_with_tools = model.bind_tools(tools)
+    tool_node = ToolNode(tools)
 
-    @property
-    def system_prompt(self) -> str:
-        return self.load_prompt("researcher_system")
+    messages = [
+        SystemMessage(content=system_prompt),
+        *list(state["messages"]),
+    ]
 
-    def _create_agent(self):
-        """Create a LangChain agent with tools and system prompt."""
-        return create_agent(
-            self.model,
-            tools=self.tools,
-            system_prompt=load_prompt("researcher"),
-        )
+    # ToolNode-based loop
+    iterations = 0
+    max_iterations = int(os.getenv("RESEARCHER_MAX_ITERATIONS", "5"))
+    while iterations < max_iterations:
+        iterations += 1
+        response = await model_with_tools.ainvoke(messages)
+        messages.append(response)
 
-    async def run(self, state: AgentState) -> dict:
-        """
-        Execute the researcher agent.
+        # No tool calls → model is done
+        if not response.tool_calls:
+            break
 
-        Args:
-            state: Current agent state
+        # Execute tool calls via ToolNode
+        tool_result = await tool_node.ainvoke({"messages": messages})
+        messages.extend(tool_result["messages"])
 
-        Returns:
-            Updated state with research_data
-        """
-        print("\n🔍 RESEARCHER AGENT Starting...")
+    # Extract research data from the final AI message
+    research_data = ""
+    for msg in reversed(messages):
+        if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
+            research_data = msg.content
+            break
 
-        agent = self._create_agent()
+    print(f"✅ RESEARCHER Complete - Gathered {len(research_data)} chars of research")
 
-        result = await agent.ainvoke(
-            {"messages": list(state["messages"])},
-        )
-
-        # Extract research data from the agent's final AI message
-        final_messages = result["messages"]
-        research_data = ""
-        for msg in reversed(final_messages):
-            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
-                research_data = msg.content
-                break
-
-        print(f"✅ RESEARCHER AGENT Complete - Gathered {len(research_data)} chars of research")
-
-        return {
-            "messages": final_messages,
-            "parallel_results": [research_data],
-        }
+    return {
+        "messages": messages,
+        "parallel_results": [research_data],
+    }

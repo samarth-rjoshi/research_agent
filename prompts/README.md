@@ -4,9 +4,9 @@ This directory contains all agent system prompts as markdown files.
 
 ## Structure
 
-- `researcher.md` - System prompt for the Researcher Agent
-- `writer.md` - System prompt for the Writer Agent
-- `reviewer.md` - System prompt for the Reviewer Agent
+- `researcher.md` - System prompt for the Researcher Agent (used by `create_agent`)
+- `writer.md` - System prompt for the Writer Agent (used by `create_agent`)
+- `supervisor_system.md` - System prompt for the Supervisor Agent
 - `__init__.py` - Utility module with `load_prompt()` function
 
 ## Usage

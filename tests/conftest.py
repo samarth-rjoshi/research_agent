@@ -105,7 +105,7 @@ def list_documents() -> str:
 # ---------------------------------------------------------------------------
 
 RESEARCH_TOOLS = [web_search, fetch_webpage, wikipedia_search]
-DOCUMENT_TOOLS = [write_document, read_document, append_to_document, list_documents]
+DOCUMENT_TOOLS = [write_document]
 
 
 @pytest.fixture(scope="session")
@@ -128,61 +128,21 @@ def document_model(llm):
 
 @pytest.fixture(scope="session")
 def researcher_system_prompt():
-    """The actual system prompt from ResearcherAgent."""
-    return """You are a Research Specialist Agent. Your ONLY job is to gather comprehensive information.
-
-YOUR RESPONSIBILITIES:
-1. Search the web using web_search to find relevant, recent information
-2. Use wikipedia_search for foundational knowledge and context
-3. Use fetch_webpage to get detailed content from promising URLs
-
-RESEARCH GUIDELINES:
-- Cast a wide net - search for multiple aspects of the topic
-- Prioritize recent and authoritative sources
-- Gather diverse perspectives and viewpoints
-- Note source URLs for citation
-- Focus on FACTS, not opinions
-
-OUTPUT FORMAT:
-Compile all your findings into a structured research summary with:
-- Key facts and statistics
-- Important quotes and findings
-- Source URLs for each piece of information
-- Any conflicting information found
-
-DO NOT write the final document - just gather and organize raw research data."""
+    """Load the actual researcher prompt from file."""
+    from prompts import load_prompt
+    return load_prompt("researcher")
 
 
 @pytest.fixture(scope="session")
 def writer_system_prompt():
-    """The actual system prompt from WriterAgent."""
-    return """You are a Document Writing Specialist Agent. Your job is to synthesize research into polished documents.
-
-YOUR RESPONSIBILITIES:
-1. Take the research data provided and synthesize it into a well-structured document
-2. Use write_document to create the final document file
-3. Ensure proper formatting, flow, and readability
-
-DOCUMENT STRUCTURE:
-- Title and date
-- Executive Summary (2-3 paragraphs)
-- Main sections with clear headings
-- Key findings and insights
-- Sources/References section
-
-WRITING GUIDELINES:
-- Write in clear, professional prose
-- Use markdown formatting for structure
-- Include all relevant facts from research
-- Cite sources inline and in references
-- Be comprehensive but concise
-
-OUTPUT: Create a markdown document using the write_document tool."""
+    """Load the actual writer prompt from file."""
+    from prompts import load_prompt
+    return load_prompt("writer")
 
 
 @pytest.fixture(scope="session")
 def reviewer_system_prompt():
-    """The actual system prompt from ReviewerAgent."""
+    """Reviewer prompt for the legacy pipeline test (no separate file needed)."""
     return """You are a Document Review Specialist Agent. Your job is to fact-check and improve documents.
 
 YOUR RESPONSIBILITIES:
@@ -203,3 +163,4 @@ OUTPUT:
 2. Save the improved document using write_document
 
 Be thorough but efficient. Focus on substantive improvements."""
+

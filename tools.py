@@ -12,7 +12,6 @@ import os
 # Get absolute paths to MCP servers
 PROJECT_DIR = Path(__file__).parent
 RESEARCH_SERVER = str(PROJECT_DIR / "mcp_servers" / "research_server.py")
-DOCUMENT_SERVER = str(PROJECT_DIR / "mcp_servers" / "document_server.py")
 
 
 def get_mcp_client() -> MultiServerMCPClient:
@@ -20,18 +19,13 @@ def get_mcp_client() -> MultiServerMCPClient:
     Create and return a MultiServerMCPClient configured with all MCP servers.
     
     Returns:
-        MultiServerMCPClient instance connected to research and document servers
+        MultiServerMCPClient instance connected to research servers
     """
     client = MultiServerMCPClient(
         {
             "research": {
                 "command": "python",
                 "args": [RESEARCH_SERVER],
-                "transport": "stdio",
-            },
-            "document": {
-                "command": "python",
-                "args": [DOCUMENT_SERVER],
                 "transport": "stdio",
             }
         }

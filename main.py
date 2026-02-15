@@ -10,6 +10,8 @@ A LangGraph-based multi-agent system with a Supervisor-led dynamic architecture:
 
 import asyncio
 import os
+import time
+import uuid
 from typing import List, Literal
 from dotenv import load_dotenv
 
@@ -20,10 +22,10 @@ from langchain_core.messages import HumanMessage
 
 from tools import get_mcp_client
 from agents import (
-    SupervisorAgent, 
-    ResearcherAgent, 
-    WriterAgent, 
-    human_review_node, 
+    run_supervisor,
+    run_researcher,
+    run_writer,
+    human_review_node,
     AgentState
 )
 
@@ -34,49 +36,46 @@ load_dotenv()
 # --- Node Functions ---
 
 async def supervisor_node(state: AgentState):
-    """Router node that calls the SupervisorAgent."""
-    supervisor = SupervisorAgent()
-    result = await supervisor.run(state)
-    return result
+    """Router node that calls the supervisor."""
+    return await run_supervisor(state)
 
 
 async def researcher_node(state: AgentState):
     """Researcher node (fanned out)."""
-    # Get MCP client and tools (locally for each node instance)
+    #TODO: FETCHING THE TOOLS TWICE 
     from tools import get_tools
     all_tools = await get_tools()
     research_tools = [t for t in all_tools if t.name in ["web_search", "fetch_webpage", "wikipedia_search"]]
-    
-    agent = ResearcherAgent(tools=research_tools)
-    return await agent.run(state)
+
+    return await run_researcher(state, tools=research_tools)
 
 
 async def merge_research_node(state: AgentState):
     """Merges parallel research results into a single research_data string."""
     print("🔄 MERGING parallel research results...")
     results = state.get("parallel_results", [])
-    merged = "\n\n" + "=" * 50 + "\n"
-    merged += "COLLECTED RESEARCH DATA\n"
-    merged += "=" * 50 + "\n\n"
+    existing_research = state.get("research_data", "")
+    merged = ""
     
     for i, res in enumerate(results, 1):
         merged += f"--- SOURCE {i} ---\n{res}\n\n"
     
+    # Append new research to existing data so previous rounds aren't lost
+    if existing_research:
+        combined = existing_research + "\n--- ADDITIONAL RESEARCH ---\n\n" + merged
+    else:
+        combined = merged
+
     return {
-        "research_data": merged,
-        "parallel_results": [], # Clear for potential next loop
+        "research_data": combined,
+        "parallel_results": [], 
         "current_phase": "writing"
     }
 
 
 async def writer_node(state: AgentState):
     """Writer node."""
-    from tools import get_tools
-    all_tools = await get_tools()
-    document_tools = [t for t in all_tools if t.name in ["write_document", "read_document", "append_to_document", "list_documents"]]
-    
-    agent = WriterAgent(tools=document_tools)
-    return await agent.run(state)
+    return await run_writer(state)
 
 
 # --- Routing Functions ---
@@ -87,9 +86,6 @@ def route_from_supervisor(state: AgentState):
     
     if phase == "research":
         subtopics = state.get("subtopics", [])
-        if not subtopics:
-            print("⚠️ No subtopics found, routing to writer")
-            return "writer"
         
         # Parallel fan-out
         return [Send("researcher", {"messages": [HumanMessage(content=s)]}) for s in subtopics]
@@ -157,13 +153,17 @@ async def run_multi_agent(query: str):
     Run the multi-agent pipeline with a given research query.
     Handles the interrupt-resume loop for human review.
     """
+    start_time = time.time()
+    thread_id = uuid.uuid4().hex[:8]
+
     print("\n" + "=" * 70)
     print("🤖 Supervisor-Led Multi-Agent Pipeline")
     print("=" * 70)
-    print(f"\n📝 Initial Task: {query}\n")
+    print(f"\n📝 Task: {query}")
+    print(f"🧵 Thread: {thread_id}\n")
     
     graph = create_multi_agent_graph()
-    config = {"configurable": {"thread_id": "research_thread_1"}}
+    config = {"configurable": {"thread_id": thread_id}}
     
     # Initialize state
     initial_state = {
@@ -190,10 +190,6 @@ async def run_multi_agent(query: str):
         
         if state_snapshot.next:
             # We hit an interrupt (human_review node)
-            # Find the interrupt payload
-            # Note: in modern LangGraph, interrupts surface through the 'interrupt' payload in snapshots or errors
-            # Here we follow the pattern of waiting for input from terminal.
-            
             # The human_review_node already printed the draft.
             print("\n👉 Awaiting your input (type 'approve' to finish, or describe changes):")
             user_input = await asyncio.get_event_loop().run_in_executor(None, input, "Feedback > ")
@@ -203,27 +199,48 @@ async def run_multi_agent(query: str):
         else:
             # Graph finished
             break
-            
+    
+    elapsed = time.time() - start_time
     print("\n" + "=" * 70)
-    print("📊 PIPELINE COMPLETE")
+    print(f"📊 PIPELINE COMPLETE  ⏱  {elapsed:.1f}s")
     print("=" * 70)
     
     return latest_state
 
 
 async def main():
-    """Main entry point."""
+    """Interactive entry point — prompts the user for research topics in a loop."""
     if not os.getenv("OPENAI_API_KEY"):
         print("❌ Error: OPENAI_API_KEY environment variable not set")
         return
-    
-    query = """
-    Research the current state of artificial general intelligence (AGI) development.
-    Include major labs (OpenAI, DeepMind, Anthropic), breakthroughs, and timelines.
-    Write a summary document called 'agi_report.md'.
-    """
-    
-    await run_multi_agent(query)
+
+    print("\n" + "=" * 70)
+    print("  🔬  Multi-Agent Research Assistant")
+    print("=" * 70)
+    print("  Describe a topic and I'll research, write, and let you review.")
+    print("  Type 'quit' to exit.\n")
+
+    while True:
+        try:
+            query = await asyncio.get_event_loop().run_in_executor(
+                None, input, "🔎 Enter research topic > "
+            )
+        except (EOFError, KeyboardInterrupt):
+            print("\n👋 Goodbye!")
+            break
+
+        query = query.strip()
+        if not query:
+            continue
+        if query.lower() in ("quit", "exit", "q"):
+            print("👋 Goodbye!")
+            break
+
+        try:
+            await run_multi_agent(query)
+        except Exception as exc:
+            print(f"\n❌ Pipeline error: {exc}")
+            print("   You can try again with another topic.\n")
 
 
 if __name__ == "__main__":

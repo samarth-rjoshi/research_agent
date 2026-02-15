@@ -17,7 +17,7 @@ class SupervisorPlan(BaseModel):
     )
     subtopics: Optional[List[str]] = Field(
         default_factory=list,
-        description="A list of 3-5 focused subtopics for parallel research. Required if action is 'research'."
+        description="A list of exactly 2 focused subtopics for parallel research. Required if action is 'research'."
     )
     rewrite_instructions: Optional[str] = Field(
         None,
