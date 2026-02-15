@@ -3,14 +3,18 @@ Writer Agent
 
 Specializes in synthesizing research into well-structured documents.
 Handles both initial drafts and revisions based on human feedback.
+Uses LangChain's create_agent for the tool-calling loop.
 """
 
 from typing import List
 from langchain_core.tools import BaseTool
 from langchain_core.messages import HumanMessage
 
+from langchain.agents import create_agent
+
 from .base import BaseAgent
 from .state import AgentState
+from prompts import load_prompt
 
 
 class WriterAgent(BaseAgent):
@@ -22,6 +26,13 @@ class WriterAgent(BaseAgent):
     On revision loops, incorporates human feedback to improve the draft.
     """
 
+    def __init__(
+        self,
+        tools: List[BaseTool],
+        temperature: float = 0.1,
+    ):
+        super().__init__(tools=tools, temperature=temperature)
+
     @property
     def name(self) -> str:
         return "Writer"
@@ -29,6 +40,14 @@ class WriterAgent(BaseAgent):
     @property
     def system_prompt(self) -> str:
         return self.load_prompt("writer_system")
+
+    def _create_agent(self):
+        """Create a LangChain agent with tools and system prompt."""
+        return create_agent(
+            self.model,
+            tools=self.tools,
+            system_prompt=load_prompt("writer"),
+        )
 
     async def run(self, state: AgentState) -> dict:
         """
@@ -80,40 +99,26 @@ RESEARCH DATA:
 
 Please synthesize this into a well-structured markdown document and save it using the write_document tool."""
 
-        messages = [
-            self.get_system_message(),
-            HumanMessage(content=writing_prompt)
-        ]
+        agent = self._create_agent()
 
-        # Run the agent loop
-        writer_messages = []
-        current_messages = messages.copy()
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=writing_prompt)]},
+            config={"recursion_limit": 10},  # ~5 tool calls max
+        )
 
-        while True:
-            response = self.model_with_tools.invoke(current_messages)
-            writer_messages.append(response)
-            current_messages.append(response)
-
-            # Check if agent wants to use tools
-            if response.tool_calls:
-                from langgraph.prebuilt import ToolNode
-                tool_node = ToolNode(self.tools)
-                tool_results = await tool_node.ainvoke({"messages": current_messages})
-
-                for msg in tool_results["messages"]:
-                    writer_messages.append(msg)
-                    current_messages.append(msg)
-            else:
-                # Agent is done writing
+        # Extract draft from the agent's final AI message
+        final_messages = result["messages"]
+        draft = ""
+        for msg in reversed(final_messages):
+            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
+                draft = msg.content
                 break
-
-        draft = response.content if hasattr(response, 'content') else str(response)
 
         mode = "Revised" if rewrite_instructions else "Created initial"
         print(f"✅ WRITER AGENT Complete - {mode} draft document")
 
         return {
-            "messages": writer_messages,
+            "messages": final_messages,
             "draft_document": draft,
             "current_phase": "human_review",
             "rewrite_instructions": "",  # Clear instructions after incorporating them

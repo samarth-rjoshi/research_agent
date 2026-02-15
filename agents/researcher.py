@@ -2,75 +2,80 @@
 Researcher Agent
 
 Specializes in gathering information from web sources, Wikipedia, and URLs.
+Uses LangChain's create_agent for the tool-calling loop.
 """
 
 from typing import List
 from langchain_core.tools import BaseTool
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
+
+from langchain.agents import create_agent
 
 from .base import BaseAgent
 from .state import AgentState
+from prompts import load_prompt
 
 
 class ResearcherAgent(BaseAgent):
     """
     Researcher Agent - Gathers comprehensive information on a topic.
-    
+
     Uses web search, Wikipedia, and URL fetching tools to collect
     raw research data from multiple sources.
     """
-    
+
+    def __init__(
+        self,
+        tools: List[BaseTool],
+        temperature: float = 0.1,
+    ):
+        super().__init__(tools=tools, temperature=temperature)
+
     @property
     def name(self) -> str:
         return "Researcher"
-    
+
     @property
     def system_prompt(self) -> str:
         return self.load_prompt("researcher_system")
 
+    def _create_agent(self):
+        """Create a LangChain agent with tools and system prompt."""
+        return create_agent(
+            self.model,
+            tools=self.tools,
+            system_prompt=load_prompt("researcher"),
+        )
+
     async def run(self, state: AgentState) -> dict:
         """
         Execute the researcher agent.
-        
+
         Args:
             state: Current agent state
-            
+
         Returns:
             Updated state with research_data
         """
         print("\n🔍 RESEARCHER AGENT Starting...")
-        
-        messages = [self.get_system_message()] + list(state["messages"])
-        
-        # Run the agent loop
-        research_messages = []
-        current_messages = messages.copy()
-        
-        while True:
-            response = self.model_with_tools.invoke(current_messages)
-            research_messages.append(response)
-            current_messages.append(response)
-            
-            # Check if agent wants to use tools
-            if response.tool_calls:
-                from langgraph.prebuilt import ToolNode
-                tool_node = ToolNode(self.tools)
-                tool_results = await tool_node.ainvoke({"messages": current_messages})
-                
-                for msg in tool_results["messages"]:
-                    research_messages.append(msg)
-                    current_messages.append(msg)
-            else:
-                # Agent is done researching
+
+        agent = self._create_agent()
+
+        result = await agent.ainvoke(
+            {"messages": list(state["messages"])},
+        )
+
+        # Extract research data from the agent's final AI message
+        final_messages = result["messages"]
+        research_data = ""
+        for msg in reversed(final_messages):
+            if hasattr(msg, "content") and msg.content and not getattr(msg, "tool_calls", None):
+                research_data = msg.content
                 break
-        
-        # Extract research data from final response
-        research_data = response.content if hasattr(response, 'content') else str(response)
-        
+
         print(f"✅ RESEARCHER AGENT Complete - Gathered {len(research_data)} chars of research")
-        
+
         return {
-            "messages": research_messages,
+            "messages": final_messages,
             "parallel_results": [research_data],
-            "current_phase": "writing"
         }

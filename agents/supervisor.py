@@ -6,10 +6,7 @@ Analyzes prompts and human feedback to decide routing:
 - "rewrite" → send directly to writer
 """
 
-import json
-from typing import List
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 
 from .base import BaseAgent
 from .state import AgentState
@@ -23,8 +20,8 @@ class SupervisorAgent(BaseAgent):
     On feedback loops: reads human_feedback and decides whether to research more or rewrite.
     """
 
-    def __init__(self, model_name: str = "gpt-4o", temperature: float = 0.1):
-        super().__init__(tools=[], model_name=model_name, temperature=temperature)
+    def __init__(self, temperature: float = 0.1):
+        super().__init__(tools=[], temperature=temperature)
 
     @property
     def name(self) -> str:
@@ -69,10 +66,10 @@ Decide whether this feedback requires more research or just a rewrite of the exi
 
 QUERY: {original_query}
 
-Break this into 3-5 focused subtopics for parallel research."""
+Break this into exactly 2 focused subtopics for parallel research."""
 
         messages = [
-            self.get_system_message(),
+            self.get_system_message(self.system_prompt),
             HumanMessage(content=user_content),
         ]
 

@@ -11,7 +11,6 @@ Contains specialized agents for the research pipeline:
 from .supervisor import SupervisorAgent
 from .researcher import ResearcherAgent
 from .writer import WriterAgent
-from .reviewer import ReviewerAgent
 from .human_review import human_review_node
 from .state import AgentState
 
@@ -19,7 +18,6 @@ __all__ = [
     "SupervisorAgent",
     "ResearcherAgent",
     "WriterAgent",
-    "ReviewerAgent",
     "human_review_node",
     "AgentState",
 ]
